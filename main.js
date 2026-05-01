@@ -9,6 +9,7 @@ let transporters = [];
 let map = { width: 40, height: 30, tiles: [] };
 let groundTiles = new Set();
 let waterTiles = new Set();
+const TILE_SIZE = 40;
 
 let factions = ['red', 'blue', 'green', 'yellow'];
 let currentFaction = 'blue';
@@ -57,10 +58,79 @@ function initOwnership() {
     }
 }
 
+class PriorityQueue {
+    constructor(comparator = (a, b) => a < b) {
+        this.heap = [];
+        this.comparator = comparator;
+        this.keys = new Set(); // Для быстрой проверки наличия
+    }
+    
+    push(element) {
+        this.heap.push(element);
+        this.keys.add(element.key);
+        this.bubbleUp(this.heap.length - 1);
+    }
+    
+    pop() {
+        if (this.heap.length === 0) return null;
+        const min = this.heap[0];
+        const last = this.heap.pop();
+        this.keys.delete(min.key);
+        
+        if (this.heap.length > 0) {
+            this.heap[0] = last;
+            this.sinkDown(0);
+        }
+        return min;
+    }
+    
+    has(key) {
+        return this.keys.has(key);
+    }
+    
+    isEmpty() {
+        return this.heap.length === 0;
+    }
+    
+    bubbleUp(index) {
+        while (index > 0) {
+            let parentIndex = Math.floor((index - 1) / 2);
+            if (this.comparator(this.heap[parentIndex], this.heap[index])) break;
+            [this.heap[parentIndex], this.heap[index]] = [this.heap[index], this.heap[parentIndex]];
+            index = parentIndex;
+        }
+    }
+    
+    sinkDown(index) {
+        let length = this.heap.length;
+        while (true) {
+            let leftChild = 2 * index + 1;
+            let rightChild = 2 * index + 2;
+            let swap = null;
+            let element = this.heap[index];
+            
+            if (leftChild < length && this.comparator(this.heap[leftChild], element)) {
+                swap = leftChild;
+            }
+            
+            if (rightChild < length) {
+                if ((swap === null && this.comparator(this.heap[rightChild], element)) ||
+                    (swap !== null && this.comparator(this.heap[rightChild], this.heap[leftChild]))) {
+                    swap = rightChild;
+                }
+            }
+            
+            if (swap === null) break;
+            [this.heap[index], this.heap[swap]] = [this.heap[swap], this.heap[index]];
+            index = swap;
+        }
+    }
+}
+
 class Unit {
     constructor(x, y, type, faction = null) {
-        this.x = x;
-        this.y = y;
+        this.x = Math.floor(x / TILE_SIZE) * TILE_SIZE + TILE_SIZE / 2;
+        this.y = Math.floor(y / TILE_SIZE) * TILE_SIZE + TILE_SIZE / 2;
         this.type = type;
         this.isEnemy = faction != 'green';
         this.faction = faction;
@@ -81,6 +151,7 @@ class Unit {
         this.captureRadius = 50;
     }
 
+    // Базовые методы, которые могут быть переопределены
     canBeOnTile(tileType) {
         if (this.type === 'land') return groundTiles.has(tileType);
         if (this.type === 'water') return waterTiles.has(tileType);
@@ -88,52 +159,114 @@ class Unit {
     }
 
     findPathTo(targetX, targetY) {
-        let startX = Math.floor(this.x / 40);
-        let startY = Math.floor(this.y / 40);
-        let targetTileX = Math.floor(targetX / 40);
-        let targetTileY = Math.floor(targetY / 40);
+        // 1. Кешируем размер тайла (лучше вынести в константы класса)
+        const TILE_SIZE = 40;
+        const HALF_TILE = TILE_SIZE / 2;
         
-        if (targetTileX < 0 || targetTileX >= map.width || targetTileY < 0 || targetTileY >= map.height) return null;
-        if (!this.canBeOnTile(map.tiles[targetTileY][targetTileX])) return null;
+        let startX = Math.floor(this.x / TILE_SIZE);
+        let startY = Math.floor(this.y / TILE_SIZE);
+        let targetTileX = Math.floor(targetX / TILE_SIZE);
+        let targetTileY = Math.floor(targetY / TILE_SIZE);
         
-        let queue = [{ x: startX, y: startY, path: [] }];
-        let visited = new Set();
-        visited.add(`${startX},${startY}`);
+        // 2. Ранняя проверка валидности
+        if (!this.isValidTile(targetTileX, targetTileY) || 
+            !this.canBeOnTile(map.tiles[targetTileY][targetTileX])) {
+            return null;
+        }
         
-        while (queue.length > 0) {
-            let current = queue.shift();
+        // 3. Если старт и цель совпадают
+        if (startX === targetTileX && startY === targetTileY) {
+            return [{ x: targetX, y: targetY }];
+        }
+        
+        // 4. Используем PriorityQueue для A* вместо BFS (оптимальнее)
+        let openSet = new PriorityQueue((a, b) => a.f < b.f);
+        let cameFrom = new Map();
+        let gScore = new Map();
+        let fScore = new Map();
+        
+        let startKey = this.getTileKey(startX, startY);
+        gScore.set(startKey, 0);
+        fScore.set(startKey, this.heuristic(startX, startY, targetTileX, targetTileY));
+        openSet.push({
+            x: startX, y: startY,
+            f: fScore.get(startKey),
+            key: startKey
+        });
+        
+        while (!openSet.isEmpty()) {
+            let current = openSet.pop();
             
             if (current.x === targetTileX && current.y === targetTileY) {
-                let waypoints = [];
-                for (let step of current.path) {
-                    waypoints.push({ x: step.x * 40 + 20, y: step.y * 40 + 20 });
-                }
-                waypoints.push({ x: targetX, y: targetY });
-                return waypoints;
+                return this.reconstructPath(cameFrom, current, targetX, targetY, TILE_SIZE, HALF_TILE);
             }
             
-            let neighbors = [
-                { dx: 0, dy: -1 }, { dx: 1, dy: 0 }, 
-                { dx: 0, dy: 1 }, { dx: -1, dy: 0 }
-            ];
-            
-            for (let n of neighbors) {
-                let nx = current.x + n.dx;
-                let ny = current.y + n.dy;
+            let neighbors = this.getNeighbors(current.x, current.y);
+            for (let neighbor of neighbors) {
+                if (!this.canBeOnTile(map.tiles[neighbor.y][neighbor.x])) continue;
                 
-                if (nx >= 0 && nx < map.width && ny >= 0 && ny < map.height) {
-                    let tileType = map.tiles[ny][nx];
-                    if (this.canBeOnTile(tileType) && !visited.has(`${nx},${ny}`)) {
-                        visited.add(`${nx},${ny}`);
-                        queue.push({
-                            x: nx, y: ny,
-                            path: [...current.path, { x: nx, y: ny }]
+                let neighborKey = this.getTileKey(neighbor.x, neighbor.y);
+                let tentativeG = gScore.get(current.key) + 1;
+                
+                if (!gScore.has(neighborKey) || tentativeG < gScore.get(neighborKey)) {
+                    cameFrom.set(neighborKey, current);
+                    gScore.set(neighborKey, tentativeG);
+                    let h = this.heuristic(neighbor.x, neighbor.y, targetTileX, targetTileY);
+                    fScore.set(neighborKey, tentativeG + h);
+                    
+                    // Оптимизация: добавляем только если нет в openSet с меньшим f
+                    if (!openSet.has(neighborKey)) {
+                        openSet.push({
+                            x: neighbor.x, y: neighbor.y,
+                            f: fScore.get(neighborKey),
+                            key: neighborKey
                         });
                     }
                 }
             }
         }
         return null;
+    }
+
+    // Вспомогательные методы
+    heuristic(x1, y1, x2, y2) {
+        // Манхэттенская дистанция (подходит для 4-направлений)
+        return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    }
+
+    getNeighbors(x, y) {
+        return [
+            { dx: 0, dy: -1, x: x, y: y - 1 }, // вверх
+            { dx: 1, dy: 0, x: x + 1, y: y },   // вправо
+            { dx: 0, dy: 1, x: x, y: y + 1 },   // вниз
+            { dx: -1, dy: 0, x: x - 1, y: y }   // влево
+        ].filter(n => this.isValidTile(n.x, n.y));
+    }
+
+    isValidTile(x, y) {
+        return x >= 0 && x < map.width && y >= 0 && y < map.height;
+    }
+
+    getTileKey(x, y) {
+        return `${x},${y}`;
+    }
+
+    reconstructPath(cameFrom, current, targetX, targetY, tileSize, halfTile) {
+        let path = [];
+        let currentKey = this.getTileKey(current.x, current.y);
+        
+        while (cameFrom.has(currentKey)) {
+            let prev = cameFrom.get(currentKey);
+            path.unshift({
+                x: prev.x * tileSize + halfTile,
+                y: prev.y * tileSize + halfTile
+            });
+            currentKey = this.getTileKey(prev.x, prev.y);
+        }
+        
+        // Добавляем конечную точку
+        path.push({ x: targetX, y: targetY });
+        return path;
     }
 
     moveTo(x, y) {
@@ -146,10 +279,16 @@ class Unit {
         }
     }
 
+    // Общий метод update, который вызывает специфичные методы
     update() {
         this.captureNearbyTiles();
         if (this.attackCooldown > 0) this.attackCooldown--;
         
+        this.updateCombat();  // Выносим боевую логику
+        this.updateMovement(); // Выносим логику движения
+    }
+
+    updateCombat() {
         let nearestEnemy = null;
         let minDist = this.attackRange;
         
@@ -165,7 +304,6 @@ class Unit {
             }
         }
         
-        let canAttack = false;
         if (nearestEnemy && minDist <= this.attackRange) {
             let dxToEnemy = nearestEnemy.x - this.x;
             let dyToEnemy = nearestEnemy.y - this.y;
@@ -173,29 +311,31 @@ class Unit {
             let angleDiff = Math.abs(angleToEnemy - this.direction);
             if (angleDiff > 180) angleDiff = 360 - angleDiff;
             
-            if (angleDiff < 45) {
-                canAttack = true;
-                if (this.attackCooldown === 0) {
-                    nearestEnemy.health -= this.attackDamage;
-                    this.attackCooldown = 30;
-                    if (nearestEnemy.health <= 0) {
-                        if (nearestEnemy.isEnemy) {
-                            let idx = enemies.indexOf(nearestEnemy);
-                            if (idx !== -1) enemies.splice(idx, 1);
-                        } else {
-                            let idx = units.indexOf(nearestEnemy);
-                            if (idx !== -1) units.splice(idx, 1);
-                            idx = transporters.indexOf(nearestEnemy);
-                            if (idx !== -1) transporters.splice(idx, 1);
-                        }
-                        if (selectedUnit === nearestEnemy) selectedUnit = null;
-                    }
+            if (angleDiff < 45 && this.attackCooldown === 0) {
+                nearestEnemy.health -= this.attackDamage;
+                this.attackCooldown = 30;
+                if (nearestEnemy.health <= 0) {
+                    this.removeDeadUnit(nearestEnemy);
                 }
             }
         }
+    }
 
+    removeDeadUnit(unit) {
+        if (unit.isEnemy) {
+            let idx = enemies.indexOf(unit);
+            if (idx !== -1) enemies.splice(idx, 1);
+        } else {
+            let idx = units.indexOf(unit);
+            if (idx !== -1) units.splice(idx, 1);
+            idx = transporters.indexOf(unit);
+            if (idx !== -1) transporters.splice(idx, 1);
+        }
+        if (selectedUnit === unit) selectedUnit = null;
+    }
+
+    updateMovement() {
         if(this.targetDir !== null){
-            
             if (this.targetDir < 0) this.targetDir += 360;
             
             if (this.direction != this.targetDir) {
@@ -205,6 +345,7 @@ class Unit {
                 
                 if (Math.abs(diff) <= this.rotationSpeed) {
                     this.direction = this.targetDir;
+                    this.targetDir = null; // Сбрасываем targetDir после достижения
                 } else if (diff > 0) {
                     this.direction += this.rotationSpeed;
                 } else {
@@ -214,9 +355,9 @@ class Unit {
                 if (this.direction >= 360) this.direction -= 360;
                 if (this.direction < 0) this.direction += 360;
                 return;
+            } else {
+                this.targetDir = null;
             }
-
-            
         }
         
         if (this.targetX !== null && this.targetY !== null) {
@@ -242,6 +383,7 @@ class Unit {
                     this.targetX = null;
                     this.targetY = null;
                     this.targetPath = null;
+                    this.targetIndex = 0;
                 }
             } else if (distance > 0) {
                 let stepX = (dx / distance) * this.speed;
@@ -299,48 +441,223 @@ class Unit {
         let drawWidth = this.width * zoom;
         let drawHeight = this.height * zoom;
         
-        if (screenX + this.width/2 < 0 || screenX - this.width/2 > canvas.width || 
-            screenY + this.height/2 < 0 || screenY - this.height/2 > canvas.height) return;
+        if (screenX + drawWidth/2 < 0 || screenX - drawWidth/2 > canvas.width - 0 || 
+            screenY + drawHeight/2 < 0 || screenY - drawHeight/2 > canvas.height) return;
         
+        this.drawPath();
+
         context.save();
         context.translate(screenX, screenY);
         context.rotate(this.direction * Math.PI / 180);
+        context.scale(zoom, zoom);
         
-        if (this.type === 'land') {
-            context.fillStyle = factionColors[this.faction] || (this.isEnemy ? '#8B0000' : '#00AA00');
-        } else {
-            context.fillStyle = factionColors[this.faction] || (this.isEnemy ? '#8B4513' : '#0055AA');
-        }
+        this.drawBody(); // Выносим отрисовку тела в отдельный метод
         
-        context.fillRect(-this.width/2, -this.height/2, this.width, this.height);
-        
+        const arrowSize = 12;
         context.fillStyle = '#FF0000';
         context.beginPath();
         context.moveTo(this.width/2, 0);
-        context.lineTo(this.width/2 - 10, -8);
-        context.lineTo(this.width/2 - 10, 8);
+        context.lineTo(this.width/2 - arrowSize, -arrowSize/2);
+        context.lineTo(this.width/2 - arrowSize, arrowSize/2);
         context.fill();
         
         context.restore();
         
+        this.drawSelection(); // Выносим отрисовку выделения
+        this.drawHealth();    // Выносим отрисовку здоровья
+    }
+
+    drawBody() {
+        context.fillStyle = factionColors[this.faction] || (this.isEnemy ? '#8B0000' : '#00AA00');
+        context.fillRect(-this.width/2, -this.height/2, this.width, this.height);
+    }
+
+    drawSelection() {
         if (selectedUnit === this) {
             context.strokeStyle = '#FFFF00';
             context.lineWidth = 3;
-            context.strokeRect(screenX - this.width/2, screenY - this.height/2, this.width, this.height);
+            context.strokeRect((this.x - camera.x) * zoom - (this.width * zoom)/2, 
+                              (this.y - camera.y) * zoom - (this.height * zoom)/2, 
+                              this.width * zoom, this.height * zoom);
+        }
+    }
+
+    drawHealth() {
+        context.fillStyle = '#FFFFFF';
+        let fontsize = 12 * zoom;
+        context.font = `${fontsize}px Arial`;
+        context.textAlign = 'center';
+        context.fillText(`${Math.max(0, this.health)}`, 
+                        (this.x - camera.x) * zoom, 
+                        (this.y - camera.y) * zoom - (this.height * zoom)/2 + 10*zoom);
+    }
+
+    drawPath() {
+        // Проверяем, есть ли путь для отрисовки
+        if (!this.targetPath || this.targetPath.length === 0) return;
+        
+        // Проверяем, выбран ли юнит (опционально - можно всегда рисовать)
+        if (selectedUnit !== this) return;
+        
+        context.save();
+        
+        // Настройки линии пути
+        context.beginPath();
+        context.strokeStyle = '#FFD700'; // Золотистый цвет
+        context.lineWidth = 3 * zoom;
+        context.setLineDash([5, 5]); // Пунктирная линия
+        context.shadowBlur = 0; // Отключаем тень для производительности
+        
+        // Рисуем линии между точками пути
+        for (let i = 0; i < this.targetPath.length - 1; i++) {
+            let point1 = this.targetPath[i];
+            let point2 = this.targetPath[i + 1];
+            
+            let screenX1 = (point1.x - camera.x) * zoom;
+            let screenY1 = (point1.y - camera.y) * zoom;
+            let screenX2 = (point2.x - camera.x) * zoom;
+            let screenY2 = (point2.y - camera.y) * zoom;
+            
+            // Проверка видимости (базовое отсечение)
+            if (this.isPointVisible(screenX1, screenY1) || 
+                this.isPointVisible(screenX2, screenY2)) {
+                
+                context.beginPath();
+                context.moveTo(screenX1, screenY1);
+                context.lineTo(screenX2, screenY2);
+                context.stroke();
+            }
         }
         
-        context.fillStyle = '#FFFFFF';
-        context.font = '12px Arial';
-        context.fillText(`${Math.max(0, this.health)}`, screenX - 10, screenY - 15);
+        // Рисуем маркеры точек пути
+        context.setLineDash([]); // Сплошная линия для маркеров
+        
+        for (let i = 0; i < this.targetPath.length; i++) {
+            let point = this.targetPath[i];
+            let screenX = (point.x - camera.x) * zoom;
+            let screenY = (point.y - camera.y) * zoom;
+            
+            if (this.isPointVisible(screenX, screenY)) {
+                // Разный стиль для первой, промежуточных и последней точки
+                if (i === 0) {
+                    // Стартовая точка (зеленый круг)
+                    context.fillStyle = '#00FF00';
+                    context.beginPath();
+                    context.arc(screenX, screenY, 5 * zoom, 0, Math.PI * 2);
+                    context.fill();
+                    // context.fillStyle = '#FFFFFF';
+                    // context.font = `${10 * zoom}px Arial`;
+                    // context.textAlign = 'center';
+                    // context.fillText("Старт", screenX, screenY - 8 * zoom);
+                } 
+                else if (i === this.targetPath.length - 1) {
+                    // Конечная точка (красный круг)
+                    context.fillStyle = '#FF0000';
+                    context.beginPath();
+                    context.arc(screenX, screenY, 5 * zoom, 0, Math.PI * 2);
+                    context.fill();
+                    // context.fillStyle = '#FFFFFF';
+                    // context.font = `${10 * zoom}px Arial`;
+                    // context.textAlign = 'center';
+                    // context.fillText("Цель", screenX, screenY - 8 * zoom);
+                }
+                else {
+                    // Промежуточные точки (маленькие синие круги)
+                    context.fillStyle = '#0099FF';
+                    context.beginPath();
+                    context.arc(screenX, screenY, 3 * zoom, 0, Math.PI * 2);
+                    context.fill();
+                }
+            }
+        }
+        
+        // Рисуем стрелку направления к следующей точке
+        if (this.targetPath.length > 0 && this.targetIndex < this.targetPath.length) {
+            let currentTarget = this.targetPath[this.targetIndex];
+            let currentPos = { x: this.x, y: this.y };
+            
+            let screenCurrentX = (currentPos.x - camera.x) * zoom;
+            let screenCurrentY = (currentPos.y - camera.y) * zoom;
+            let screenTargetX = (currentTarget.x - camera.x) * zoom;
+            let screenTargetY = (currentTarget.y - camera.y) * zoom;
+            
+            if (this.isPointVisible(screenCurrentX, screenCurrentY) &&
+                this.isPointVisible(screenTargetX, screenTargetY)) {
+                
+                // Рисуем стрелку направления
+                let angle = Math.atan2(screenTargetY - screenCurrentY, 
+                                    screenTargetX - screenCurrentX);
+                let arrowSize = 15 * zoom;
+                let arrowX = screenCurrentX + Math.cos(angle) * 20 * zoom;
+                let arrowY = screenCurrentY + Math.sin(angle) * 20 * zoom;
+                
+                context.fillStyle = '#FFD700';
+                context.beginPath();
+                context.moveTo(arrowX, arrowY);
+                context.lineTo(arrowX - arrowSize * 0.5, arrowY - arrowSize * 0.5);
+                context.lineTo(arrowX - arrowSize * 0.3, arrowY);
+                context.lineTo(arrowX - arrowSize * 0.5, arrowY + arrowSize * 0.5);
+                context.fill();
+            }
+        }
+        
+        // Рисуем информацию о пути
+        // if (selectedUnit === this && this.targetPath.length > 0) {
+        //     let totalDistance = this.calculatePathDistance();
+        //     let fontSize = 12 * zoom;
+        //     context.font = `${fontSize}px Arial`;
+        //     context.fillStyle = '#FFFFFF';
+        //     context.shadowBlur = 2;
+        //     context.shadowColor = 'black';
+            
+        //     let infoX = (this.x - camera.x) * zoom;
+        //     let infoY = (this.y - camera.y) * zoom - (this.height * zoom) - 10 * zoom;
+            
+        //     context.fillText(`Путь: ${this.targetPath.length} точек`, 
+        //                     infoX, infoY);
+        //     context.fillText(`Дистанция: ${Math.round(totalDistance)}`, 
+        //                     infoX, infoY + fontSize + 2);
+        // }
+        
+        context.restore();
     }
+
+    // Вспомогательные методы
+    isPointVisible(screenX, screenY) {
+        // Проверяет, находится ли точка в пределах экрана с небольшим запасом
+        let margin = 100;
+        return screenX + margin >= 0 && 
+            screenX - margin <= canvas.width && 
+            screenY + margin >= 0 && 
+            screenY - margin <= canvas.height;
+    }
+
+    calculatePathDistance() {
+        // Вычисляет общую длину пути
+        if (!this.targetPath || this.targetPath.length < 2) return 0;
+        
+        let totalDistance = 0;
+        let prevPoint = this.targetPath[0];
+        
+        for (let i = 1; i < this.targetPath.length; i++) {
+            let currentPoint = this.targetPath[i];
+            let dx = currentPoint.x - prevPoint.x;
+            let dy = currentPoint.y - prevPoint.y;
+            totalDistance += Math.sqrt(dx * dx + dy * dy);
+            prevPoint = currentPoint;
+        }
+        
+        return totalDistance;
+    }
+    
 }
 
 class Transporter extends Unit {
     constructor(x, y, faction) {
         super(x, y, 'water', faction);
         this.carriedUnit = null;
-        this.width = 50;
-        this.height = 50;
+        this.width = 40;
+        this.height = 40;
     }
     
     loadUnit(unit) {
@@ -386,49 +703,27 @@ class Transporter extends Unit {
         return false;
     }
     
-    draw() {
-        let screenX = (this.x - camera.x) * zoom;
-        let screenY = (this.y - camera.y) * zoom;
-        let drawWidth = this.width * zoom;
-        let drawHeight = this.height * zoom;
-        
-        if (screenX + this.width/2 < 0 || screenX - this.width/2 > canvas.width || 
-            screenY + this.height/2 < 0 || screenY - this.height/2 > canvas.height) return;
-        
-        context.save();
-        context.translate(screenX, screenY);
-        context.rotate(this.direction * Math.PI / 180);
-        
+    drawBody() {
         context.fillStyle = this.isEnemy ? '#CD853F' : '#4169E1';
         context.fillRect(-this.width/2, -this.height/2, this.width, this.height);
-        
-        context.fillStyle = '#FF0000';
-        context.beginPath();
-        context.moveTo(this.width/2, 0);
-        context.lineTo(this.width/2 - 10, -8);
-        context.lineTo(this.width/2 - 10, 8);
-        context.fill();
-        
-        context.restore();
-        
-        if (this.carriedUnit) {
-            context.fillStyle = '#FFD700';
-            context.fillRect(screenX - 15, screenY - 15, 30, 30);
-        }
-        
-        if (selectedUnit === this) {
-            context.strokeStyle = '#FFFF00';
-            context.lineWidth = 3;
-            context.strokeRect(screenX - this.width/2, screenY - this.height/2, this.width, this.height);
-        }
-        
-        context.fillStyle = '#FFFFFF';
-        context.font = '12px Arial';
-        context.fillText(`${Math.max(0, this.health)}`, screenX - 10, screenY - 15);
     }
     
+    draw() {
+        super.draw(); // Вызываем родительский метод
+        
+        // Добавляем специфичную для транспортера отрисовку
+        if (this.carriedUnit) {
+            context.fillStyle = '#FFD700';
+            context.fillRect((this.x - camera.x) * zoom - 15, 
+                            (this.y - camera.y) * zoom - 15, 
+                            30, 30);
+        }
+    }
+    
+    // Transporter может переопределить update для добавления своей логики
     update() {
-        super.update();
+        super.update(); // Вызываем родительский update
+        // Добавляем специфичную для транспортера логику здесь
     }
 }
 
@@ -555,6 +850,11 @@ function handleCanvasClick(e) {
     let mouseY = (e.clientY - rect.top) * scaleY;
     let worldX = mouseX / zoom + camera.x;
     let worldY = mouseY / zoom + camera.y;
+
+    let tileX = Math.floor(worldX / TILE_SIZE);
+    let tileY = Math.floor(worldY / TILE_SIZE);
+    worldX = tileX * TILE_SIZE + TILE_SIZE / 2;
+    worldY = tileY * TILE_SIZE + TILE_SIZE / 2;
     
     let clickedUnit = null;
     let allUnits = [...units, ...enemies, ...transporters];
