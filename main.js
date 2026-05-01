@@ -692,5 +692,13 @@ function init() {
 }
 
 window.addEventListener('load', init);
-window.addEventListener('resize', resizeCanvas);
+let resizeTimeout;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        if (canvas && context) {
+            resizeCanvas();
+        }
+    }, 100);
+});
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 20));
