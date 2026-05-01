@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Goose War</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000000;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: system-ui, 'Segoe UI', 'Monaco', 'Courier New', monospace;
+        }
+
+        .field {
+            display: block;
+            line-height: 0;
+        }
+
+        canvas {
+            display: block;
+            width: auto;
+            height: auto;
+            outline: none;
+            box-shadow: none;
+            background: #ffff;
+        }
+
+        canvas:focus-visible {
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="field">
+        <canvas id="gameCanvas" aria-label="Goose War game canvas — pure battleground">
+            Your browser does not support HTML5 canvas. Update to modern browser.
+        </canvas>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
