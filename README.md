@@ -29,4 +29,6 @@ A real-time strategy game where you control tanks, capture territory, and conque
 
 **Pro tip:** Use transporters to sneak land units across rivers and flank the enemy!
 
+**Try out yourself:** <a src="https://holy-goose-empire.github.io/goose_war/">https://holy-goose-empire.github.io/goose_war/</a>
+
 *Because geese deserve a war too*
