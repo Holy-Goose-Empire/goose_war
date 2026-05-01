@@ -159,73 +159,205 @@ class Unit {
     }
 
     findPathTo(targetX, targetY) {
-        // 1. Кешируем размер тайла (лучше вынести в константы класса)
-        const TILE_SIZE = 40;
-        const HALF_TILE = TILE_SIZE / 2;
+    const TILE_SIZE = 40;
+    const HALF_TILE = TILE_SIZE / 2;
+    
+    let startX = Math.floor(this.x / TILE_SIZE);
+    let startY = Math.floor(this.y / TILE_SIZE);
+    let targetTileX = Math.floor(targetX / TILE_SIZE);
+    let targetTileY = Math.floor(targetY / TILE_SIZE);
+    
+    // Check if target is valid
+    if (!this.isValidTile(targetTileX, targetTileY) || 
+        !this.canBeOnTile(map.tiles[targetTileY][targetTileX])) {
+        return null;
+    }
+    
+    // If start and target are the same
+    if (startX === targetTileX && startY === targetTileY) {
+        return [{ x: targetX, y: targetY }];
+    }
+    
+    // Get enemy occupied tiles (cache for performance)
+    let enemyTiles = this.getEnemyOccupiedTiles();
+    
+    // A* pathfinding with rotation cost
+    let openSet = new PriorityQueue((a, b) => a.f < b.f);
+    let cameFrom = new Map();
+    let gScore = new Map();  // Cost from start to node
+    let fScore = new Map();  // Total estimated cost
+    let directionMap = new Map();  // Direction we entered each node
+    
+    let startKey = this.getTileKey(startX, startY);
+    let startDirection = this.getDirectionToTile(startX, startY, startX, startY);
+    gScore.set(startKey, 0);
+    fScore.set(startKey, this.heuristic(startX, startY, targetTileX, targetTileY));
+    directionMap.set(startKey, startDirection);
+    openSet.push({
+        x: startX, y: startY,
+        f: fScore.get(startKey),
+        key: startKey
+    });
+    
+    while (!openSet.isEmpty()) {
+        let current = openSet.pop();
         
-        let startX = Math.floor(this.x / TILE_SIZE);
-        let startY = Math.floor(this.y / TILE_SIZE);
-        let targetTileX = Math.floor(targetX / TILE_SIZE);
-        let targetTileY = Math.floor(targetY / TILE_SIZE);
-        
-        // 2. Ранняя проверка валидности
-        if (!this.isValidTile(targetTileX, targetTileY) || 
-            !this.canBeOnTile(map.tiles[targetTileY][targetTileX])) {
-            return null;
+        if (current.x === targetTileX && current.y === targetTileY) {
+            return this.reconstructPath(cameFrom, current, targetX, targetY, TILE_SIZE, HALF_TILE);
         }
         
-        // 3. Если старт и цель совпадают
-        if (startX === targetTileX && startY === targetTileY) {
-            return [{ x: targetX, y: targetY }];
-        }
+        let neighbors = this.getNeighbors(current.x, current.y);
+        let currentKey = this.getTileKey(current.x, current.y);
+        let currentDirection = directionMap.get(currentKey) || this.getCurrentMovementDirection();
         
-        // 4. Используем PriorityQueue для A* вместо BFS (оптимальнее)
-        let openSet = new PriorityQueue((a, b) => a.f < b.f);
-        let cameFrom = new Map();
-        let gScore = new Map();
-        let fScore = new Map();
-        
-        let startKey = this.getTileKey(startX, startY);
-        gScore.set(startKey, 0);
-        fScore.set(startKey, this.heuristic(startX, startY, targetTileX, targetTileY));
-        openSet.push({
-            x: startX, y: startY,
-            f: fScore.get(startKey),
-            key: startKey
-        });
-        
-        while (!openSet.isEmpty()) {
-            let current = openSet.pop();
+        for (let neighbor of neighbors) {
+            // Check if tile is traversable
+            if (!this.canBeOnTile(map.tiles[neighbor.y][neighbor.x])) continue;
             
-            if (current.x === targetTileX && current.y === targetTileY) {
-                return this.reconstructPath(cameFrom, current, targetX, targetY, TILE_SIZE, HALF_TILE);
+            // Check if tile has enemy unit (unless it's the target tile)
+            let isTargetTile = (neighbor.x === targetTileX && neighbor.y === targetTileY);
+            if (!isTargetTile && enemyTiles.has(this.getTileKey(neighbor.x, neighbor.y))) {
+                continue; // Skip tiles occupied by enemies
             }
             
-            let neighbors = this.getNeighbors(current.x, current.y);
-            for (let neighbor of neighbors) {
-                if (!this.canBeOnTile(map.tiles[neighbor.y][neighbor.x])) continue;
+            // Calculate movement cost (1 base cost per tile)
+            let movementCost = 1;
+            
+            // Calculate rotation cost for this move
+            let newDirection = this.getDirectionFromTo(current.x, current.y, neighbor.x, neighbor.y);
+            let rotationCost = this.calculateRotationCost(currentDirection, newDirection);
+            
+            // Total cost for this step
+            let stepCost = movementCost + rotationCost;
+            
+            let neighborKey = this.getTileKey(neighbor.x, neighbor.y);
+            let tentativeG = gScore.get(currentKey) + stepCost;
+            
+            if (!gScore.has(neighborKey) || tentativeG < gScore.get(neighborKey)) {
+                cameFrom.set(neighborKey, current);
+                gScore.set(neighborKey, tentativeG);
+                directionMap.set(neighborKey, newDirection);
                 
-                let neighborKey = this.getTileKey(neighbor.x, neighbor.y);
-                let tentativeG = gScore.get(current.key) + 1;
+                let h = this.heuristic(neighbor.x, neighbor.y, targetTileX, targetTileY);
                 
-                if (!gScore.has(neighborKey) || tentativeG < gScore.get(neighborKey)) {
-                    cameFrom.set(neighborKey, current);
-                    gScore.set(neighborKey, tentativeG);
-                    let h = this.heuristic(neighbor.x, neighbor.y, targetTileX, targetTileY);
-                    fScore.set(neighborKey, tentativeG + h);
-                    
-                    // Оптимизация: добавляем только если нет в openSet с меньшим f
-                    if (!openSet.has(neighborKey)) {
-                        openSet.push({
-                            x: neighbor.x, y: neighbor.y,
-                            f: fScore.get(neighborKey),
-                            key: neighborKey
-                        });
+                // Add penalty for tiles near enemies (optional: makes path prefer safer routes)
+                let nearEnemyPenalty = this.getNearEnemyPenalty(neighbor.x, neighbor.y);
+                
+                fScore.set(neighborKey, tentativeG + h + nearEnemyPenalty);
+                
+                if (!openSet.has(neighborKey)) {
+                    openSet.push({
+                        x: neighbor.x, y: neighbor.y,
+                        f: fScore.get(neighborKey),
+                        key: neighborKey
+                    });
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Helper method to get current movement direction from unit's target direction or facing
+getCurrentMovementDirection() {
+    // If unit has a target direction, use that, otherwise use current facing direction
+    let direction = this.targetDir !== null ? this.targetDir : this.direction;
+    return this.angleToDirection(direction);
+}
+
+// Convert angle to direction (0=right, 1=down, 2=left, 3=up)
+angleToDirection(angle) {
+    let normalized = ((angle % 360) + 360) % 360;
+    // Round to nearest 90 degrees
+    let rounded = Math.round(normalized / 90) % 4;
+    return rounded;
+}
+
+// Get direction from one tile to another (returns: 0=right, 1=down, 2=left, 3=up)
+getDirectionFromTo(fromX, fromY, toX, toY) {
+    if (toX > fromX) return 0; // Right
+    if (toX < fromX) return 2; // Left
+    if (toY > fromY) return 1; // Down
+    if (toY < fromY) return 3; // Up
+    return 0; // Default (should not happen)
+}
+
+// Get initial direction for start tile (based on unit's current facing)
+getDirectionToTile(currentX, currentY, targetX, targetY) {
+    return this.getCurrentMovementDirection();
+}
+
+// Calculate rotation cost based on angle difference
+calculateRotationCost(currentDirection, newDirection) {
+    if (currentDirection === newDirection) {
+        // No rotation needed
+        return 0;
+    }
+    
+    // Calculate the angle difference
+    let angleDiff = Math.abs(currentDirection - newDirection);
+    // Wrap around (0-3 are 90-degree increments)
+    angleDiff = Math.min(angleDiff, 4 - angleDiff);
+    
+    // Convert to degrees (each step is 90 degrees)
+    let degreesToRotate = angleDiff * 90;
+    let rotationFramesCost = degreesToRotate / this.rotationSpeed;
+    
+    // Add a small penalty for any rotation to discourage unnecessary turns
+    let turnPenalty = 0.2;
+    let totalCost = rotationFramesCost + (angleDiff > 0 ? turnPenalty : 0);
+    
+    // Apply multiplier for sharper turns (optional, makes 180-degree turns much more expensive)
+    if (angleDiff === 2) { // 180-degree turn
+        totalCost *= 1.5;
+    }
+    
+    return totalCost;
+}
+
+    getEnemyOccupiedTiles() {
+        let enemyTiles = new Set();
+        let allEnemies = [...enemies, ...transporters.filter(t => t.isEnemy && t !== this)];
+        
+        for (let enemy of allEnemies) {
+            let enemyTileX = Math.floor(enemy.x / 40);
+            let enemyTileY = Math.floor(enemy.y / 40);
+            enemyTiles.add(this.getTileKey(enemyTileX, enemyTileY));
+            
+            // Also add adjacent tiles to create a "danger zone" (optional)
+            // This prevents units from getting too close to enemies
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    let adjX = enemyTileX + dx;
+                    let adjY = enemyTileY + dy;
+                    if (this.isValidTile(adjX, adjY)) {
+                        enemyTiles.add(this.getTileKey(adjX, adjY));
                     }
                 }
             }
         }
-        return null;
+        
+        return enemyTiles;
+    }
+
+    // Optional: Add penalty for tiles near enemies to prefer safer paths
+    getNearEnemyPenalty(tileX, tileY) {
+        let penalty = 0;
+        let allEnemies = [...enemies, ...transporters.filter(t => t.isEnemy && t !== this)];
+        
+        for (let enemy of allEnemies) {
+            let enemyTileX = Math.floor(enemy.x / 40);
+            let enemyTileY = Math.floor(enemy.y / 40);
+            let distance = Math.abs(tileX - enemyTileX) + Math.abs(tileY - enemyTileY);
+            
+            if (distance === 1) {
+                penalty += 5; // High penalty for adjacent to enemy
+            } else if (distance === 2) {
+                penalty += 2; // Small penalty for being 2 tiles away
+            }
+        }
+        
+        return penalty;
     }
 
     // Вспомогательные методы
@@ -297,9 +429,9 @@ class Unit {
             if (!other || other === this) continue;
             let dx = this.x - other.x;
             let dy = this.y - other.y;
-            let dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < minDist) {
-                minDist = dist;
+            let dist = dx * dx + dy * dy;
+            if (dist < minDist*minDist) {
+                minDist = Math.sqrt(dist);
                 nearestEnemy = other;
             }
         }
@@ -801,17 +933,20 @@ function drawMap() {
     startRow = Math.max(0, startRow);
     let tileSize = 40 * zoom;
     
+    // Draw tiles (always needed)
     for (let y = startRow; y < endRow; y++) {
         for (let x = startCol; x < endCol; x++) {
             let screenX = x * 40 * zoom - camera.x * zoom;
             let screenY = y * 40 * zoom - camera.y * zoom;
             
-            // Draw base tile
-            if (map.tiles[y][x] === 'ground') {
-                context.fillStyle = '#7CFC00';
-            } else {
-                context.fillStyle = '#1E90FF';
+            // Skip if offscreen
+            if (screenX + tileSize < 0 || screenX > canvas.width + tileSize ||
+                screenY + tileSize < 0 || screenY > canvas.height + tileSize) {
+                continue;
             }
+            
+            // Draw base tile
+            context.fillStyle = map.tiles[y][x] === 'ground' ? '#7CFC00' : '#1E90FF';
             context.fillRect(screenX, screenY, tileSize, tileSize);
             
             // Draw ownership overlay
@@ -824,18 +959,63 @@ function drawMap() {
             
             // Draw capture progress
             if (tileCaptureProgress[y][x] > 0 && tileOwnership[y][x] !== currentFaction) {
-                context.fillStyle = '#FFFFFF';
-                context.globalAlpha = 0.7;
-                let progressHeight = (tileCaptureProgress[y][x] / 100) * tileSize;
-                context.fillRect(screenX, screenY + tileSize - progressHeight, tileSize, progressHeight);
-                context.globalAlpha = 1;
+                let progress = tileCaptureProgress[y][x] / 100;
+                
+                // Draw progress as a clean border ring in WHITE
+                let borderWidth = Math.max(2, 4 * zoom);
+                let radius = (tileSize / 2) - (borderWidth / 2);
+                let centerX = screenX + tileSize/2;
+                let centerY = screenY + tileSize/2;
+                
+                context.beginPath();
+                context.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * progress));
+                context.strokeStyle = '#FFFFFF';  // White instead of faction color
+                context.lineWidth = borderWidth;
+                context.stroke();
+                
+                // Add percentage text for clarity
+                if (zoom > 0.8) { // Only show text when zoomed in enough
+                    let percent = Math.floor(tileCaptureProgress[y][x]);
+                    context.font = `bold ${Math.floor(10 * zoom)}px Arial`;
+                    context.fillStyle = '#FFFFFF';
+                    context.shadowBlur = 2;
+                    context.shadowColor = '#000000';
+                    context.textAlign = 'center';
+                    context.textBaseline = 'middle';
+                    context.fillText(`${percent}%`, centerX, centerY);
+                    context.shadowBlur = 0;
+                }
             }
-            
-            context.strokeStyle = '#000000';
-            context.lineWidth = 1;
-            context.strokeRect(screenX, screenY, tileSize, tileSize);
         }
     }
+    
+    // Draw grid lines in BATCHED mode - ONE stroke per row/column
+    context.beginPath();
+    context.strokeStyle = '#000000';
+    context.lineWidth = 1;
+    
+    // Calculate first and last screen positions
+    let firstX = startCol * 40 * zoom - camera.x * zoom;
+    let lastX = endCol * 40 * zoom - camera.x * zoom;
+    let firstY = startRow * 40 * zoom - camera.y * zoom;
+    let lastY = endRow * 40 * zoom - camera.y * zoom;
+    
+    // Draw ALL horizontal lines in one batch
+    for (let y = startRow; y <= endRow; y++) {
+        let screenY = y * 40 * zoom - camera.y * zoom;
+        context.moveTo(firstX, screenY);
+        context.lineTo(lastX, screenY);
+    }
+    
+    // Draw ALL vertical lines in one batch
+    for (let x = startCol; x <= endCol; x++) {
+        let screenX = x * 40 * zoom - camera.x * zoom;
+        context.moveTo(screenX, firstY);
+        context.lineTo(screenX, lastY);
+    }
+    
+    // Execute ALL grid lines in just 2 drawing operations!
+    context.stroke();
 }
 
 function handleCanvasClick(e) {
@@ -934,8 +1114,13 @@ function handleCanvasContextMenu(e) {
     let scaleY = canvas.height / rect.height;
     let mouseX = (e.clientX - rect.left) * scaleX;
     let mouseY = (e.clientY - rect.top) * scaleY;
-    let worldX = mouseX + camera.x;
-    let worldY = mouseY + camera.y;
+    let worldX = mouseX / zoom + camera.x;
+    let worldY = mouseY / zoom + camera.y;
+
+    let tileX = Math.floor(worldX / TILE_SIZE);
+    let tileY = Math.floor(worldY / TILE_SIZE);
+    worldX = tileX * TILE_SIZE + TILE_SIZE / 2;
+    worldY = tileY * TILE_SIZE + TILE_SIZE / 2;
     
     if (selectedUnit) {
         selectedUnit.rotateTo(worldX, worldY);
